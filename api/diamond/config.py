@@ -11,7 +11,7 @@ REGULAR_IP = 6.0
 REGULAR_LOOKBACK_GAMES = 15
 TEAM_LOOKBACK_GAMES = 30
 TEAM_RECENT_GAMES = 10
-HTTP_WORKERS = 10
+HTTP_WORKERS = int(os.environ.get("HTTP_WORKERS", "4"))
 
 
 def ingest_years() -> list[int]:

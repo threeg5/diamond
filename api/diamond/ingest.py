@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import math
 from calendar import monthrange
 from collections import defaultdict
@@ -437,6 +438,190 @@ def _log_splits(payload: dict | None) -> list[dict]:
     return splits
 
 
+def _player_row_from_split(split: dict, id_to_abbr: dict[int, str]) -> dict | None:
+    kind = KEEP_TYPES.get(split.get("gameType"))
+    if split.get("gameType") and not kind:
+        return None
+    game = split.get("game") or {}
+    player = split.get("player") or {}
+    team = split.get("team") or {}
+    opp = split.get("opponent") or {}
+    pid = str(player.get("id") or "")
+    gid = str(game.get("gamePk") or "")
+    if not pid or not gid:
+        return None
+    gameday = split.get("date")
+    if gameday and str(gameday)[5:7] in {"01", "02"} and split.get("gameType") in {None, "S", "E"}:
+        return None
+    if not kind and split.get("gameType") in {None, "S", "E", "A"}:
+        return None
+    row = {
+        "player_id": pid,
+        "player_name": player.get("fullName"),
+        "position": None,
+        "team": team.get("abbreviation") or id_to_abbr.get(team.get("id")),
+        "opponent": opp.get("abbreviation") or id_to_abbr.get(opp.get("id")),
+        "season": _int(split.get("season")),
+        "gameday": gameday,
+        "season_type": kind or "REG",
+        "game_id": gid,
+        "is_home": int(bool(split.get("isHome"))),
+    }
+    positions = split.get("positionsPlayed") or []
+    if positions:
+        first = positions[0]
+        if isinstance(first, dict):
+            row["position"] = first.get("abbreviation")
+        else:
+            row["position"] = str(first)
+    stat = split.get("stat") or {}
+    if "inningsPitched" in stat:
+        row["pitching_strikeouts"] = _num(stat.get("strikeOuts"))
+        row["pitching_walks"] = _num(stat.get("baseOnBalls"))
+        row["earned_runs"] = _num(stat.get("earnedRuns"))
+        row["hits_allowed"] = _num(stat.get("hits"))
+        outs = _int(stat.get("outs")) or innings_to_outs(stat.get("inningsPitched"))
+        row["pitcher_outs"] = outs
+        row["innings_pitched"] = None if outs is None else round(outs / 3.0, 3)
+        row["pitches_thrown"] = _num(stat.get("numberOfPitches"))
+        row["batters_faced"] = _num(stat.get("battersFaced"))
+        row["home_runs_allowed"] = _num(stat.get("homeRuns"))
+        row["games_started"] = _num(stat.get("gamesStarted"))
+        if not row.get("position"):
+            row["position"] = "P"
+    else:
+        row["hits"] = _num(stat.get("hits"))
+        row["home_runs"] = _num(stat.get("homeRuns"))
+        row["rbi"] = _num(stat.get("rbi"))
+        row["runs"] = _num(stat.get("runs"))
+        row["doubles"] = _num(stat.get("doubles"))
+        row["triples"] = _num(stat.get("triples"))
+        row["stolen_bases"] = _num(stat.get("stolenBases"))
+        row["total_bases"] = _num(stat.get("totalBases"))
+        row["walks"] = _num(stat.get("baseOnBalls"))
+        row["strikeouts"] = _num(stat.get("strikeOuts"))
+        row["at_bats"] = _num(stat.get("atBats"))
+        row["plate_appearances"] = _num(stat.get("plateAppearances"))
+    return row
+
+
+def _merge_player_row(existing: dict, incoming: dict) -> None:
+    for key, value in incoming.items():
+        if value is not None and (existing.get(key) is None or key not in existing):
+            existing[key] = value
+        elif key in {
+            "hits", "home_runs", "rbi", "runs", "doubles", "triples", "stolen_bases",
+            "total_bases", "walks", "strikeouts", "at_bats", "plate_appearances",
+            "pitching_strikeouts", "pitching_walks", "earned_runs", "hits_allowed",
+            "innings_pitched", "pitcher_outs", "pitches_thrown", "batters_faced",
+            "home_runs_allowed", "games_started", "position",
+        } and value is not None:
+            existing[key] = value
+
+
+def upsert_player_games(conn, rows: list[dict]) -> None:
+    if not rows:
+        return
+    pk = {"player_id", "game_id"}
+    updates = ",".join(
+        f"{col}=COALESCE(excluded.{col}, player_games.{col})"
+        for col in PLAYER_GAME_COLS
+        if col not in pk
+    )
+    placeholders = ",".join("?" for _ in PLAYER_GAME_COLS)
+    sql = (
+        f"INSERT INTO player_games ({','.join(PLAYER_GAME_COLS)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(player_id, game_id) DO UPDATE SET {updates}"
+    )
+    records = [tuple(_cell(row.get(col)) for col in PLAYER_GAME_COLS) for row in rows]
+    conn.executemany(sql, records)
+    conn.commit()
+
+
+def ingest_player_games(
+    conn,
+    years: list[int],
+    hitting_ids: dict[int, set[int]],
+    pitching_ids: dict[int, set[int]],
+    teams: dict[int, dict],
+    game_ids: set[str],
+    home_teams: dict[str, str],
+    game_meta: dict[str, tuple],
+) -> int:
+    id_to_abbr = {tid: t["abbr"] for tid, t in teams.items()}
+    jobs: list[tuple[int, int, str]] = []
+    for year in years:
+        for pid in hitting_ids[year]:
+            jobs.append((year, pid, "hitting"))
+        for pid in pitching_ids[year]:
+            jobs.append((year, pid, "pitching"))
+    urls = [player_log_url(pid, group, year) for year, pid, group in jobs]
+    print(f"  player game logs: {len(urls)}", flush=True)
+    batch: list[dict] = []
+    done = 0
+    written = 0
+    for _url, payload, err in get_many(urls):
+        done += 1
+        if done % 100 == 0:
+            print(f"    {done}/{len(urls)} written={written}", flush=True)
+            gc.collect()
+        if err or not payload:
+            continue
+        by_key: dict[tuple[str, str], dict] = {}
+        for split in _log_splits(payload):
+            row = _player_row_from_split(split, id_to_abbr)
+            if not row or row["game_id"] not in game_ids:
+                continue
+            meta = game_meta.get(row["game_id"])
+            if meta:
+                season_type, gameday = meta
+                if season_type:
+                    row["season_type"] = season_type
+                if gameday:
+                    row["gameday"] = gameday
+            if row["game_id"] in home_teams:
+                row["is_home"] = 1 if home_teams[row["game_id"]] == row.get("team") else 0
+            key = (row["player_id"], row["game_id"])
+            existing = by_key.get(key)
+            if existing is None:
+                by_key[key] = row
+            else:
+                _merge_player_row(existing, row)
+        batch.extend(by_key.values())
+        if len(batch) >= 400:
+            upsert_player_games(conn, batch)
+            written += len(batch)
+            batch.clear()
+    if batch:
+        upsert_player_games(conn, batch)
+        written += len(batch)
+    print(f"  player-game rows written: {written}", flush=True)
+    return written
+
+
+def rebuild_players(conn) -> int:
+    conn.execute("DELETE FROM players")
+    conn.execute(
+        """
+        INSERT INTO players (player_id, player_name, position, latest_team)
+        SELECT player_id, player_name, position, team
+        FROM (
+          SELECT player_id, player_name, position, team,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY player_id
+                   ORDER BY gameday DESC, season DESC, rowid DESC
+                 ) AS rn
+          FROM player_games
+        )
+        WHERE rn = 1
+        """
+    )
+    conn.commit()
+    count = int(conn.execute("SELECT COUNT(*) FROM players").fetchone()[0])
+    print(f"  players: {count}", flush=True)
+    return count
+
+
 def load_player_games(
     years: list[int],
     hitting_ids: dict[int, set[int]],
@@ -461,73 +646,15 @@ def load_player_games(
         if err or not payload:
             continue
         for split in _log_splits(payload):
-            kind = KEEP_TYPES.get(split.get("gameType"))
-            if split.get("gameType") and not kind:
+            row = _player_row_from_split(split, id_to_abbr)
+            if not row:
                 continue
-            game = split.get("game") or {}
-            player = split.get("player") or {}
-            team = split.get("team") or {}
-            opp = split.get("opponent") or {}
-            pid = str(player.get("id") or "")
-            gid = str(game.get("gamePk") or "")
-            if not pid or not gid:
-                continue
-            gameday = split.get("date")
-            if gameday and str(gameday)[5:7] in {"01", "02"} and split.get("gameType") in {None, "S", "E"}:
-                continue
-            if not kind and split.get("gameType") in {None, "S", "E", "A"}:
-                continue
-            key = (pid, gid)
-            row = by_key.setdefault(
-                key,
-                {
-                    "player_id": pid,
-                    "player_name": player.get("fullName"),
-                    "position": None,
-                    "team": team.get("abbreviation") or id_to_abbr.get(team.get("id")),
-                    "opponent": opp.get("abbreviation") or id_to_abbr.get(opp.get("id")),
-                    "season": _int(split.get("season")),
-                    "gameday": gameday,
-                    "season_type": kind or "REG",
-                    "game_id": gid,
-                    "is_home": int(bool(split.get("isHome"))),
-                },
-            )
-            positions = split.get("positionsPlayed") or []
-            if positions and not row.get("position"):
-                first = positions[0]
-                if isinstance(first, dict):
-                    row["position"] = first.get("abbreviation")
-                else:
-                    row["position"] = str(first)
-            stat = split.get("stat") or {}
-            if "inningsPitched" in stat:
-                row["pitching_strikeouts"] = _num(stat.get("strikeOuts"))
-                row["pitching_walks"] = _num(stat.get("baseOnBalls"))
-                row["earned_runs"] = _num(stat.get("earnedRuns"))
-                row["hits_allowed"] = _num(stat.get("hits"))
-                outs = _int(stat.get("outs")) or innings_to_outs(stat.get("inningsPitched"))
-                row["pitcher_outs"] = outs
-                row["innings_pitched"] = None if outs is None else round(outs / 3.0, 3)
-                row["pitches_thrown"] = _num(stat.get("numberOfPitches"))
-                row["batters_faced"] = _num(stat.get("battersFaced"))
-                row["home_runs_allowed"] = _num(stat.get("homeRuns"))
-                row["games_started"] = _num(stat.get("gamesStarted"))
-                if not row.get("position"):
-                    row["position"] = "P"
+            key = (row["player_id"], row["game_id"])
+            existing = by_key.get(key)
+            if existing is None:
+                by_key[key] = row
             else:
-                row["hits"] = _num(stat.get("hits"))
-                row["home_runs"] = _num(stat.get("homeRuns"))
-                row["rbi"] = _num(stat.get("rbi"))
-                row["runs"] = _num(stat.get("runs"))
-                row["doubles"] = _num(stat.get("doubles"))
-                row["triples"] = _num(stat.get("triples"))
-                row["stolen_bases"] = _num(stat.get("stolenBases"))
-                row["total_bases"] = _num(stat.get("totalBases"))
-                row["walks"] = _num(stat.get("baseOnBalls"))
-                row["strikeouts"] = _num(stat.get("strikeOuts"))
-                row["at_bats"] = _num(stat.get("atBats"))
-                row["plate_appearances"] = _num(stat.get("plateAppearances"))
+                _merge_player_row(existing, row)
     print(f"  player-game rows: {len(by_key)}")
     return pd.DataFrame(list(by_key.values()))
 
@@ -772,8 +899,10 @@ TEAM_GAME_COLS = [
 
 def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
     years = years or SEASONS
-    print(f"Ingesting seasons {years[0]}-{years[-1]}")
+    print(f"Ingesting seasons {years[0]}-{years[-1]}", flush=True)
     conn = connect()
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("ingest_complete", "0"))
+    conn.commit()
     existing_games = 0
     if resume:
         try:
@@ -782,7 +911,7 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
             existing_games = 0
 
     if existing_games:
-        print(f"Resuming; keeping {existing_games} games")
+        print(f"Resuming; keeping {existing_games} games", flush=True)
         teams = load_teams(years)
         write_frame(
             conn,
@@ -790,11 +919,16 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
             pd.DataFrame(list(teams.values())),
             ["team_id", "abbr", "name", "league_id", "division_id"],
         )
-        games = pd.read_sql_query("SELECT * FROM games", conn)
+        games = pd.read_sql_query(
+            "SELECT game_id, season, gameday, season_type, home_team, away_team FROM games",
+            conn,
+        )
     else:
         reset_schema(conn)
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("ingest_complete", "0"))
+        conn.commit()
 
-        print("Teams")
+        print("Teams", flush=True)
         teams = load_teams(years)
         write_frame(
             conn,
@@ -803,7 +937,7 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
             ["team_id", "abbr", "name", "league_id", "division_id"],
         )
 
-        print("Schedules")
+        print("Schedules", flush=True)
         raw_games = load_schedule(years)
         venue_ids = set()
         for game in raw_games:
@@ -813,57 +947,69 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
         for team in teams.values():
             if team.get("venue_id"):
                 venue_ids.add(int(team["venue_id"]))
-        print("Venues")
+        print("Venues", flush=True)
         venues = load_venues(venue_ids)
         games = prepare_games(raw_games, teams, venues)
         write_frame(conn, "games", games, GAME_COLS)
+        del raw_games, venues
+        gc.collect()
 
-    print("Team game logs")
-    team_games = load_team_games(years, teams)
-    if not team_games.empty and not games.empty:
-        gmap = games.set_index("game_id")[["season_type", "gameday", "season"]]
-        for col in ("season_type", "gameday", "season"):
-            team_games[col] = team_games["game_id"].map(gmap[col]).combine_first(team_games[col])
-        team_games = team_games[team_games["game_id"].isin(set(games["game_id"]))]
-    write_frame(conn, "team_games", team_games, TEAM_GAME_COLS)
-
-    print("Player IDs")
-    hitting_ids, pitching_ids = season_player_ids(years)
-    print("Player game logs")
-    player_games = load_player_games(years, hitting_ids, pitching_ids, teams)
-    if not player_games.empty and not games.empty:
-        keep = set(games["game_id"])
-        player_games = player_games[player_games["game_id"].isin(keep)]
-        gmap = games.set_index("game_id")[["season_type", "gameday"]]
-        player_games["season_type"] = player_games["game_id"].map(gmap["season_type"]).combine_first(
-            player_games["season_type"]
-        )
-        player_games["gameday"] = player_games["game_id"].map(gmap["gameday"]).combine_first(
-            player_games["gameday"]
-        )
-        home_teams = dict(zip(games["game_id"], games["home_team"]))
-        player_games["is_home"] = [
-            1 if home_teams.get(gid) == team else 0 if gid in home_teams else is_home
-            for gid, team, is_home in zip(
-                player_games["game_id"], player_games["team"], player_games["is_home"]
-            )
-        ]
-    if not player_games.empty:
-        latest = (
-            player_games.sort_values(["season", "gameday"])
-            .groupby("player_id", as_index=False)
-            .tail(1)[["player_id", "player_name", "position", "team"]]
-            .rename(columns={"team": "latest_team"})
-        )
-        write_frame(conn, "players", latest, ["player_id", "player_name", "position", "latest_team"])
-        write_frame(conn, "player_games", player_games, PLAYER_GAME_COLS)
+    existing_tg = int(conn.execute("SELECT COUNT(*) FROM team_games").fetchone()[0])
+    if existing_tg:
+        print(f"Keeping {existing_tg} team games", flush=True)
+        team_games_n = existing_tg
     else:
-        write_frame(conn, "players", pd.DataFrame(), ["player_id", "player_name", "position", "latest_team"])
-        write_frame(conn, "player_games", pd.DataFrame(), PLAYER_GAME_COLS)
+        print("Team game logs", flush=True)
+        team_games = load_team_games(years, teams)
+        if not team_games.empty and not games.empty:
+            gmap = games.set_index("game_id")[["season_type", "gameday", "season"]]
+            for col in ("season_type", "gameday", "season"):
+                team_games[col] = team_games["game_id"].map(gmap[col]).combine_first(team_games[col])
+            team_games = team_games[team_games["game_id"].isin(set(games["game_id"]))]
+        write_frame(conn, "team_games", team_games, TEAM_GAME_COLS)
+        team_games_n = len(team_games)
+        del team_games
+        gc.collect()
 
-    print("Injured list")
+    player_done = conn.execute(
+        "SELECT value FROM meta WHERE key='player_ingest_done'"
+    ).fetchone()
+    if player_done and str(player_done[0]) == "1":
+        player_games_n = int(conn.execute("SELECT COUNT(*) FROM player_games").fetchone()[0])
+        print(f"Keeping {player_games_n} player games", flush=True)
+    else:
+        print("Player IDs", flush=True)
+        hitting_ids, pitching_ids = season_player_ids(years)
+        print("Player game logs", flush=True)
+        game_ids = set(str(gid) for gid in games["game_id"])
+        home_teams = {str(gid): team for gid, team in zip(games["game_id"], games["home_team"])}
+        game_meta = {
+            str(gid): (stype, gday)
+            for gid, stype, gday in zip(games["game_id"], games["season_type"], games["gameday"])
+        }
+        player_games_n = ingest_player_games(
+            conn, years, hitting_ids, pitching_ids, teams, game_ids, home_teams, game_meta
+        )
+        rebuild_players(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("player_ingest_done", "1"),
+        )
+        conn.commit()
+        del hitting_ids, pitching_ids, game_ids, home_teams, game_meta
+        gc.collect()
+
+    print("Injured list", flush=True)
     intervals = load_il_intervals(years, teams)
-    missing = prepare_missing_regulars(games, player_games, intervals)
+    player_games = pd.read_sql_query(
+        """
+        SELECT player_id, team, gameday, plate_appearances, innings_pitched, position
+        FROM player_games
+        """,
+        conn,
+    )
+    il_games = games[games["season"].isin(years)] if not games.empty else games
+    missing = prepare_missing_regulars(il_games, player_games, intervals)
     write_frame(
         conn,
         "missing_regulars",
@@ -873,6 +1019,8 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
             "position", "side", "pa_recent", "ip_recent", "status", "injury",
         ],
     )
+    del player_games, missing, intervals
+    gc.collect()
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
@@ -882,14 +1030,15 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
         ("seasons", ",".join(str(y) for y in years)),
     )
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("ingest_complete", "1"))
     conn.commit()
     conn.close()
-    print("Done.")
+    print("Done.", flush=True)
     return {
         "seasons": years,
         "games": len(games),
-        "team_games": len(team_games),
-        "player_games": len(player_games),
+        "team_games": team_games_n,
+        "player_games": player_games_n,
     }
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from diamond.config import DB_PATH
+from diamond.config import DATA_DIR, DB_PATH
 from diamond.db import connect
 from diamond.slate import get_matchup, get_slate
 from diamond.venues import PACIFIC_TEAMS
@@ -72,7 +72,13 @@ def meta():
               (SELECT COUNT(*) FROM missing_regulars) AS missing_regulars
             """,
         )
-        return {"ingested": True, "stats": STATS, **kv, **(counts or {})}
+        return {
+            "ingested": True,
+            "stats": STATS,
+            "ingest_lock": (DATA_DIR / "ingest.lock").exists(),
+            **kv,
+            **(counts or {}),
+        }
     finally:
         conn.close()
 

@@ -4,7 +4,8 @@ import json
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from diamond.config import HTTP_WORKERS
 
@@ -25,10 +26,13 @@ def get_json(url: str, retries: int = 4, timeout: int = 60) -> dict:
     raise RuntimeError(f"GET failed {url}: {last}")
 
 
-def get_many(urls: list[str], workers: int | None = None) -> list[tuple[str, dict | None, str | None]]:
-    out: list[tuple[str, dict | None, str | None]] = []
+def get_many(
+    urls: list[str], workers: int | None = None
+) -> Iterator[tuple[str, dict | None, str | None]]:
+    """Fetch URLs with a small in-flight window so payloads are not all held at once."""
     if not urls:
-        return out
+        return
+    n = max(1, workers or HTTP_WORKERS)
 
     def one(url: str):
         try:
@@ -36,11 +40,24 @@ def get_many(urls: list[str], workers: int | None = None) -> list[tuple[str, dic
         except Exception as exc:
             return url, None, str(exc)
 
-    with ThreadPoolExecutor(max_workers=workers or HTTP_WORKERS) as pool:
-        futures = [pool.submit(one, url) for url in urls]
-        for fut in as_completed(futures):
-            out.append(fut.result())
-    return out
+    pending: set = set()
+    it = iter(urls)
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        def fill() -> None:
+            while len(pending) < n * 2:
+                try:
+                    url = next(it)
+                except StopIteration:
+                    return
+                pending.add(pool.submit(one, url))
+
+        fill()
+        while pending:
+            done, not_done = wait(pending, return_when=FIRST_COMPLETED)
+            pending = set(not_done)
+            for fut in done:
+                yield fut.result()
+            fill()
 
 
 def teams_url(season: int) -> str:
