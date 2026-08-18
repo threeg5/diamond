@@ -32,8 +32,8 @@ API on Render (Python + SQLite disk). Public site is a HostGator folder, not Fio
 
 1. Push this repo to GitHub (private).
 2. [render.com](https://render.com) → New → **Blueprint** → this repo.
-3. First API boot starts ingest in the background if the disk is empty (several minutes).
-4. Confirm the API hostname (usually `https://diamond-api.onrender.com`) and put it in `web/.env.hostgator` as `VITE_API_URL` if it differs.
+3. First API boot starts ingest in the background if the disk is empty (several minutes). If games exist but players are still 0, the next boot resumes team/player ingest without wiping the schedule.
+4. Confirm the API hostname (`https://diamond-api-6sbp.onrender.com`) and put it in `web/.env.hostgator` as `VITE_API_URL` if it differs. `https://diamond-api.onrender.com` is a different, suspended service.
 5. From `web/`: `npm run build:hostgator`.
 6. HostGator cPanel → File Manager → `public_html/thediamond/` → upload the contents of `web/dist` (including `.htaccess`).
 7. Keep `CORS_ORIGINS` on **diamond-api** as `https://theprofitengineer.com,https://www.theprofitengineer.com`.

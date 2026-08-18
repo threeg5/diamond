@@ -770,35 +770,53 @@ TEAM_GAME_COLS = [
 ]
 
 
-def run_ingest(years: list[int] | None = None) -> dict:
+def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
     years = years or SEASONS
     print(f"Ingesting seasons {years[0]}-{years[-1]}")
     conn = connect()
-    reset_schema(conn)
+    existing_games = 0
+    if resume:
+        try:
+            existing_games = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+        except Exception:
+            existing_games = 0
 
-    print("Teams")
-    teams = load_teams(years)
-    write_frame(
-        conn,
-        "teams",
-        pd.DataFrame(list(teams.values())),
-        ["team_id", "abbr", "name", "league_id", "division_id"],
-    )
+    if existing_games:
+        print(f"Resuming; keeping {existing_games} games")
+        teams = load_teams(years)
+        write_frame(
+            conn,
+            "teams",
+            pd.DataFrame(list(teams.values())),
+            ["team_id", "abbr", "name", "league_id", "division_id"],
+        )
+        games = pd.read_sql_query("SELECT * FROM games", conn)
+    else:
+        reset_schema(conn)
 
-    print("Schedules")
-    raw_games = load_schedule(years)
-    venue_ids = set()
-    for game in raw_games:
-        vid = (game.get("venue") or {}).get("id")
-        if vid:
-            venue_ids.add(int(vid))
-    for team in teams.values():
-        if team.get("venue_id"):
-            venue_ids.add(int(team["venue_id"]))
-    print("Venues")
-    venues = load_venues(venue_ids)
-    games = prepare_games(raw_games, teams, venues)
-    write_frame(conn, "games", games, GAME_COLS)
+        print("Teams")
+        teams = load_teams(years)
+        write_frame(
+            conn,
+            "teams",
+            pd.DataFrame(list(teams.values())),
+            ["team_id", "abbr", "name", "league_id", "division_id"],
+        )
+
+        print("Schedules")
+        raw_games = load_schedule(years)
+        venue_ids = set()
+        for game in raw_games:
+            vid = (game.get("venue") or {}).get("id")
+            if vid:
+                venue_ids.add(int(vid))
+        for team in teams.values():
+            if team.get("venue_id"):
+                venue_ids.add(int(team["venue_id"]))
+        print("Venues")
+        venues = load_venues(venue_ids)
+        games = prepare_games(raw_games, teams, venues)
+        write_frame(conn, "games", games, GAME_COLS)
 
     print("Team game logs")
     team_games = load_team_games(years, teams)
