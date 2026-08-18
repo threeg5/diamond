@@ -1,0 +1,45 @@
+# Render Blueprint — New → Blueprint → this repo.
+# First boot ingests MLB Stats API data onto the API disk (several minutes).
+# After deploy: HostGator CNAME `diamond` → diamond-web.onrender.com,
+# then add diamond.fioatech.com on diamond-web → Custom Domains.
+
+services:
+  - type: web
+    name: diamond-api
+    runtime: python
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: diamond-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /var/data
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CORS_ORIGINS
+        value: https://diamond.fioatech.com,https://diamond-web.onrender.com
+
+  - type: web
+    name: diamond-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: diamond-api
+          envVarKey: RENDER_EXTERNAL_URL

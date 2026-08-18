@@ -1,0 +1,13 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.db
+*.db-journal
+data/
+node_modules/
+dist/
+.env
+.DS_Store
+web/dist/
+api/data/
