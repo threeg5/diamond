@@ -28,13 +28,14 @@ Open `http://127.0.0.1:5174`. API defaults to `http://127.0.0.1:8001`.
 
 ## Deploy (Render + HostGator)
 
-Same pattern as Wagechecker and pay.fioatech.com: API + static web on Render, SQLite on a 1 GB disk, HostGator CNAME for the public hostname.
+API on Render (Python + SQLite disk). Public site is a HostGator folder, not Fioatech DNS.
 
 1. Push this repo to GitHub (private).
 2. [render.com](https://render.com) → New → **Blueprint** → this repo.
-3. First API boot starts ingest in the background if the disk is empty (several minutes). The site will show “database not loaded” until that finishes.
-4. HostGator cPanel → Zone Editor → **CNAME**: `diamond` → `diamond-web.onrender.com` (or the hostname Render shows).
-5. Render → **diamond-web** → Custom Domains → add `diamond.fioatech.com`.
-6. Keep `CORS_ORIGINS` on **diamond-api** as `https://diamond.fioatech.com,https://diamond-web.onrender.com`.
+3. First API boot starts ingest in the background if the disk is empty (several minutes).
+4. Confirm the API hostname (usually `https://diamond-api.onrender.com`) and put it in `web/.env.hostgator` as `VITE_API_URL` if it differs.
+5. From `web/`: `npm run build:hostgator`.
+6. HostGator cPanel → File Manager → `public_html/thediamond/` → upload the contents of `web/dist` (including `.htaccess`).
+7. Keep `CORS_ORIGINS` on **diamond-api** as `https://theprofitengineer.com,https://www.theprofitengineer.com`.
 
-Public URL: `https://diamond.fioatech.com`. The site is public until auth is added. Render free API will sleep when idle.
+Public URL: `https://theprofitengineer.com/thediamond`. The site is public until auth is added. Render free API will sleep when idle.

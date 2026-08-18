@@ -1,7 +1,7 @@
 # Render Blueprint — New → Blueprint → this repo.
-# First boot ingests MLB Stats API data onto the API disk (several minutes).
-# After deploy: HostGator CNAME `diamond` → diamond-web.onrender.com,
-# then add diamond.fioatech.com on diamond-web → Custom Domains.
+# API stays on Render. Public site is HostGator: https://theprofitengineer.com/thediamond
+# After API is live, build the HostGator copy: cd web && npm run build:hostgator
+# then upload web/dist into public_html/thediamond.
 
 services:
   - type: web
@@ -23,7 +23,7 @@ services:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: CORS_ORIGINS
-        value: https://diamond.fioatech.com,https://diamond-web.onrender.com
+        value: https://theprofitengineer.com,https://www.theprofitengineer.com,https://diamond-web.onrender.com
 
   - type: web
     name: diamond-web

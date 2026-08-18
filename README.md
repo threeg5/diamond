@@ -33,8 +33,15 @@ First ingest pulls 2022–2026 from the MLB Stats API. Takes several minutes.
 
 ## Online (Render + HostGator)
 
-`render.yaml` creates **diamond-api** (Python + SQLite disk) and **diamond-web** (static Vite app). First API start downloads game logs in the background if the database is missing.
+`render.yaml` creates **diamond-api** (Python + SQLite on a disk). Public site is HostGator at **https://theprofitengineer.com/thediamond** — not Fioatech.
 
-HostGator CNAME: `diamond` → the Render web hostname, then add `diamond.fioatech.com` as a custom domain on **diamond-web**. Public URL is `https://diamond.fioatech.com`.
+After the API is up:
+
+```
+cd web
+npm run build:hostgator
+```
+
+Upload `web/dist` into HostGator `public_html/thediamond/`. CORS on the API allows `https://theprofitengineer.com`.
 
 This is decision support from historical data, not a prediction of future results.
