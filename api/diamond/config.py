@@ -14,6 +14,13 @@ TEAM_RECENT_GAMES = 10
 HTTP_WORKERS = 10
 
 
+def ingest_years() -> list[int]:
+    raw = os.environ.get("INGEST_SEASONS", "")
+    if raw.strip():
+        return [int(part.strip()) for part in raw.split(",") if part.strip()]
+    return SEASONS
+
+
 HOSTGATOR_ORIGINS = (
     "https://theprofitengineer.com",
     "https://www.theprofitengineer.com",

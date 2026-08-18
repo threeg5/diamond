@@ -1,17 +1,20 @@
 from contextlib import asynccontextmanager
 from threading import Thread
 import os
+import time
+import traceback
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from diamond.config import DATA_DIR, DB_PATH, cors_origins
+from diamond.config import DATA_DIR, DB_PATH, cors_origins, ingest_years
 from diamond.routes import router
 
 
 def _ingest_if_empty() -> None:
     if DB_PATH.exists():
         return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock = DATA_DIR / "ingest.lock"
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -23,17 +26,28 @@ def _ingest_if_empty() -> None:
             return
         from diamond.ingest import run_ingest
 
-        print(f"No database at {DB_PATH}; ingesting MLB Stats API data")
-        run_ingest()
+        years = ingest_years()
+        print(f"No database at {DB_PATH}; ingesting MLB Stats API data for {years}")
+        run_ingest(years)
+    except Exception:
+        traceback.print_exc()
     finally:
         lock.unlink(missing_ok=True)
 
 
+def _boot_ingest() -> None:
+    time.sleep(20)
+    _ingest_if_empty()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Could not create data dir {DATA_DIR}: {exc}")
     if not DB_PATH.exists():
-        Thread(target=_ingest_if_empty, daemon=True).start()
+        Thread(target=_boot_ingest, daemon=True).start()
     yield
 
 

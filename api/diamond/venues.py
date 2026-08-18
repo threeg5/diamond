@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+
+try:
+    ET = ZoneInfo("America/New_York")
+except Exception:
+    ET = timezone(timedelta(hours=-4))
 
 # Home park approx lat, lon, timezone hours from UTC (standard time).
 TEAM_HOMES: dict[str, tuple[float, float, int]] = {
@@ -42,7 +47,6 @@ TEAM_HOMES: dict[str, tuple[float, float, int]] = {
 PACIFIC_TEAMS = {"ATH", "LAA", "LAD", "SD", "SEA", "SF"}
 ALTITUDE_TEAMS = {"COL"}
 SHORT_MILES = 700.0
-ET = ZoneInfo("America/New_York")
 
 TEAM_NAMES: dict[str, str] = {
     "AZ": "Arizona Diamondbacks",
