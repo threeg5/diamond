@@ -14,9 +14,19 @@ TEAM_RECENT_GAMES = 10
 HTTP_WORKERS = 10
 
 
+HOSTGATOR_ORIGINS = (
+    "https://theprofitengineer.com",
+    "https://www.theprofitengineer.com",
+)
+
+
 def cors_origins() -> list[str]:
     raw = os.environ.get(
         "CORS_ORIGINS",
         "http://127.0.0.1:5174,http://localhost:5174",
     )
-    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    for origin in HOSTGATOR_ORIGINS:
+        if origin not in origins:
+            origins.append(origin)
+    return origins
