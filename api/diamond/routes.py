@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from diamond.config import DATA_DIR, DB_PATH
 from diamond.db import connect
 from diamond.slate import get_matchup, get_slate
+from diamond.hands import season_hand_splits
 from diamond.venues import PACIFIC_TEAMS
 
 router = APIRouter()
@@ -90,7 +91,7 @@ def search_players(q: str = Query(..., min_length=2), limit: int = 15):
         return rows(
             conn,
             """
-            SELECT player_id, player_name, position, latest_team
+            SELECT player_id, player_name, position, latest_team, throws, bats
             FROM players
             WHERE player_name LIKE ?
             ORDER BY
@@ -110,13 +111,19 @@ def player_summary(player_id: str):
     try:
         player = one(
             conn,
-            "SELECT player_id, player_name, position, latest_team FROM players WHERE player_id = ?",
+            "SELECT player_id, player_name, position, latest_team, throws, bats FROM players WHERE player_id = ?",
             (player_id,),
         )
         if not player:
             raise HTTPException(404, "Player not found")
         default_stat, default_line = DEFAULT_LINES.get(player["position"] or "", ("hits", 0.5))
-        return {**player, "default_stat": default_stat, "default_line": default_line, "stats": STATS}
+        return {
+            **player,
+            "default_stat": default_stat,
+            "default_line": default_line,
+            "stats": STATS,
+            "hand_splits": season_hand_splits(player_id, player.get("position")),
+        }
     finally:
         conn.close()
 
@@ -150,6 +157,7 @@ def player_prop(
     altitude: int | None = None,
     west_coast_early: int | None = None,
     consec_road: int | None = None,
+    opp_hand: str | None = None,
     season_from: int | None = None,
     season_to: int | None = None,
     season_type: str = "REG",
@@ -161,7 +169,7 @@ def player_prop(
     try:
         player = one(
             conn,
-            "SELECT player_id, player_name, position, latest_team FROM players WHERE player_id = ?",
+            "SELECT player_id, player_name, position, latest_team, throws, bats FROM players WHERE player_id = ?",
             (player_id,),
         )
         if not player:
@@ -232,7 +240,20 @@ def player_prop(
             where.append(f"{road_col} >= ?")
             params.append(consec_road)
 
+        opp_throws_sql = "CASE WHEN pg.is_home = 1 THEN ap.throws ELSE hp.throws END"
+        opp_sp_sql = "CASE WHEN pg.is_home = 1 THEN g.away_sp_name ELSE g.home_sp_name END"
+        if opp_hand in {"L", "R"}:
+            where.append(f"{opp_throws_sql} = ?")
+            params.append(opp_hand)
+
         where = [clause for clause in where if clause != "1=1"]
+
+        join_sql = """
+            FROM player_games pg
+            LEFT JOIN games g ON g.game_id = pg.game_id
+            LEFT JOIN players hp ON hp.player_id = g.home_sp_id
+            LEFT JOIN players ap ON ap.player_id = g.away_sp_id
+        """
 
         sql = f"""
             SELECT
@@ -251,9 +272,10 @@ def player_prop(
               {road_col} AS road_streak,
               g.home_score, g.away_score,
               g.home_team, g.away_team,
-              g.home_sp_name, g.away_sp_name
-            FROM player_games pg
-            LEFT JOIN games g ON g.game_id = pg.game_id
+              g.home_sp_name, g.away_sp_name,
+              {opp_sp_sql} AS opp_sp_name,
+              {opp_throws_sql} AS opp_sp_throws
+            {join_sql}
             WHERE {' AND '.join(where)}
             ORDER BY pg.gameday DESC
         """
@@ -290,6 +312,19 @@ def player_prop(
         values = [float(g["stat_value"]) for g in games if g["stat_value"] is not None]
         values_sorted = sorted(values)
         median = values_sorted[len(values_sorted) // 2] if values_sorted else None
+
+        def _vs_box(hand: str) -> dict:
+            subset = [g for g in games if g.get("opp_sp_throws") == hand]
+            sub_hits = sum(1 for g in subset if g["hit"])
+            sub_vals = [float(g["stat_value"]) for g in subset if g["stat_value"] is not None]
+            return {
+                "hand": hand,
+                "sample_size": len(subset),
+                "hits": sub_hits,
+                "hit_rate": round(sub_hits / len(subset), 3) if subset else None,
+                "mean": round(sum(sub_vals) / len(sub_vals), 2) if sub_vals else None,
+            }
+
         return {
             "player": player,
             "stat": stat,
@@ -300,6 +335,8 @@ def player_prop(
             "hit_rate": round(hits / len(games), 3) if games else None,
             "mean": round(sum(values) / len(values), 2) if values else None,
             "median": median,
+            "vs_lhp": _vs_box("L"),
+            "vs_rhp": _vs_box("R"),
             "games": games,
         }
     finally:

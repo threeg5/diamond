@@ -1022,6 +1022,12 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
     del player_games, missing, intervals
     gc.collect()
 
+    print("Pitcher / batter hands", flush=True)
+    from diamond.hands import enrich_hands
+
+    hands_n = enrich_hands(conn)
+    print(f"  hands updated: {hands_n}", flush=True)
+
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
         ("ingested_at", datetime.now(timezone.utc).isoformat()),

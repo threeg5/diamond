@@ -28,12 +28,20 @@ const EMPTY_QUERY: PropQuery = {
   altitude: "",
   westCoastEarly: "",
   consecRoad: "",
+  oppHand: "",
 };
 
 function streakLabel(value: number | null) {
   if (value == null || value === 0) return "—";
   const n = Math.abs(value);
   return value > 0 ? `${n}W` : `${n}L`;
+}
+
+function handTag(throws: string | null | undefined) {
+  if (throws === "L") return "LHP";
+  if (throws === "R") return "RHP";
+  if (throws === "S") return "SHP";
+  return null;
 }
 
 function formatMissing(rows: MissingRegular[]) {
@@ -175,6 +183,7 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
                   <strong>{hit.player_name}</strong>
                   <span>
                     {hit.position} · {hit.latest_team}
+                    {hit.throws ? ` · ${handTag(hit.throws) ?? hit.throws}` : ""}
                   </span>
                 </button>
               </li>
@@ -220,6 +229,19 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
               <option value="">All</option>
               <option value="1">Home</option>
               <option value="0">Away</option>
+            </select>
+          </label>
+          <label>
+            Opposing pitcher
+            <select
+              value={filters.oppHand}
+              onChange={(e) =>
+                setFilters({ ...filters, oppHand: e.target.value as PropQuery["oppHand"] })
+              }
+            >
+              <option value="">Any</option>
+              <option value="L">vs LHP</option>
+              <option value="R">vs RHP</option>
             </select>
           </label>
           <label>
@@ -384,6 +406,35 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
         </form>
       )}
 
+      {player?.hand_splits && (
+        <section className="hero-side" style={{ marginBottom: "1rem" }}>
+          <p className="kicker">
+            {player.hand_splits.season} {player.hand_splits.group === "pitching" ? "pitching" : "hitting"} splits
+          </p>
+          <div className="stat-pills">
+            <span className="pill">
+              {player.hand_splits.left_label}
+              <b>
+                {player.hand_splits.group === "pitching"
+                  ? ` ${player.hand_splits.vs_left?.k9 ?? "—"} K/9 · ${player.hand_splits.vs_left?.era ?? "—"} ERA`
+                  : ` ${player.hand_splits.vs_left?.avg ?? "—"} AVG · ${player.hand_splits.vs_left?.ops ?? "—"} OPS`}
+              </b>
+            </span>
+            <span className="pill">
+              {player.hand_splits.right_label}
+              <b>
+                {player.hand_splits.group === "pitching"
+                  ? ` ${player.hand_splits.vs_right?.k9 ?? "—"} K/9 · ${player.hand_splits.vs_right?.era ?? "—"} ERA`
+                  : ` ${player.hand_splits.vs_right?.avg ?? "—"} AVG · ${player.hand_splits.vs_right?.ops ?? "—"} OPS`}
+              </b>
+            </span>
+          </div>
+          <p className="note">
+            Season splits from MLB. Game rows use the opposing starter’s throwing hand.
+          </p>
+        </section>
+      )}
+
       {error && <p className="error">{error}</p>}
 
       {result && (
@@ -391,7 +442,10 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
           <section className="hero">
             <div className="scoreboard">
               <p className="kicker">
-                {result.player.player_name} · {result.stat_label} over {result.line}
+                {result.player.player_name}
+                {result.player.throws ? ` · ${handTag(result.player.throws)}` : ""}
+                {" · "}
+                {result.stat_label} over {result.line}
               </p>
               <p className="rate">{pct(result.hit_rate)}</p>
               <p className="sub">historical hit rate in matching games</p>
@@ -412,6 +466,14 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
                 <span className="pill">
                   Median <b>{result.median ?? "—"}</b>
                 </span>
+                <span className="pill">
+                  vs LHP <b>{pct(result.vs_lhp?.hit_rate ?? null)}</b>
+                  <small> {result.vs_lhp?.sample_size ?? 0}g</small>
+                </span>
+                <span className="pill">
+                  vs RHP <b>{pct(result.vs_rhp?.hit_rate ?? null)}</b>
+                  <small> {result.vs_rhp?.sample_size ?? 0}g</small>
+                </span>
               </div>
             </div>
           </section>
@@ -422,6 +484,7 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
                 <tr>
                   <th>When</th>
                   <th>Spot</th>
+                  <th>Opp SP</th>
                   <th>Travel</th>
                   <th>Rest</th>
                   <th>Park / wx</th>
@@ -442,6 +505,13 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
                     </td>
                     <td>
                       {game.is_home === 1 ? "vs" : "@"} {game.opponent}
+                    </td>
+                    <td>
+                      {game.opp_sp_name
+                        ? `${game.opp_sp_name.split(" ").slice(-1)[0]}${
+                            game.opp_sp_throws ? ` (${game.opp_sp_throws})` : ""
+                          }`
+                        : "—"}
                     </td>
                     <td>{travelLabel(game)}</td>
                     <td>{game.rest_days ?? "—"}d</td>

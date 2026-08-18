@@ -82,6 +82,11 @@ def season_stats_url(group: str, season: int) -> str:
     )
 
 
+def people_url(person_ids: list[str] | list[int]) -> str:
+    joined = ",".join(str(pid) for pid in person_ids)
+    return f"{BASE}/people?personIds={joined}"
+
+
 def player_log_url(player_id: int, group: str, season: int) -> str:
     return f"{BASE}/people/{player_id}/stats?stats=gameLog&group={group}&season={season}"
 

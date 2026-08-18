@@ -8,12 +8,40 @@ export type PlayerHit = {
   player_name: string;
   position: string | null;
   latest_team: string | null;
+  throws?: string | null;
+  bats?: string | null;
+};
+
+export type HandSplit = {
+  games?: number | null;
+  innings?: string | number | null;
+  strikeouts?: number | null;
+  walks?: number | null;
+  hits?: number | null;
+  home_runs?: number | null;
+  era?: number | null;
+  whip?: number | null;
+  k9?: number | null;
+  avg?: string | number | null;
+  ops?: string | number | null;
+  obp?: string | number | null;
+  slg?: string | number | null;
+  pa?: number | null;
+  season?: number | string | null;
 };
 
 export type PlayerSummary = PlayerHit & {
   default_stat: string;
   default_line: number;
   stats: Record<string, string>;
+  hand_splits?: {
+    group: "hitting" | "pitching";
+    season: number;
+    left_label: string;
+    right_label: string;
+    vs_left: HandSplit | null;
+    vs_right: HandSplit | null;
+  } | null;
 };
 
 export type MissingRegular = {
@@ -56,8 +84,18 @@ export type PropGame = {
   away_score: number | null;
   home_sp_name: string | null;
   away_sp_name: string | null;
+  opp_sp_name: string | null;
+  opp_sp_throws: string | null;
   missing_teammates: MissingRegular[];
   missing_opponents: MissingRegular[];
+};
+
+export type HandBox = {
+  hand: string;
+  sample_size: number;
+  hits: number;
+  hit_rate: number | null;
+  mean: number | null;
 };
 
 export type PropResult = {
@@ -70,6 +108,8 @@ export type PropResult = {
   hit_rate: number | null;
   mean: number | null;
   median: number | null;
+  vs_lhp?: HandBox;
+  vs_rhp?: HandBox;
   games: PropGame[];
 };
 
@@ -123,6 +163,7 @@ export type PropQuery = {
   altitude: "" | "1";
   westCoastEarly: "" | "1";
   consecRoad: "" | "1";
+  oppHand: "" | "L" | "R";
 };
 
 export function fetchProp(playerId: string, q: PropQuery) {
@@ -144,6 +185,7 @@ export function fetchProp(playerId: string, q: PropQuery) {
   if (q.altitude) params.set("altitude", q.altitude);
   if (q.westCoastEarly) params.set("west_coast_early", q.westCoastEarly);
   if (q.consecRoad) params.set("consec_road", q.consecRoad);
+  if (q.oppHand) params.set("opp_hand", q.oppHand);
   return getJson<PropResult>(
     `/api/players/${encodeURIComponent(playerId)}/prop?${params}`,
   );
@@ -191,6 +233,8 @@ export type SlateGame = {
   away_tz_change: number | null;
   home_sp_name: string | null;
   away_sp_name: string | null;
+  home_sp_throws: string | null;
+  away_sp_throws: string | null;
   day_night: string | null;
   neutral: boolean;
 };

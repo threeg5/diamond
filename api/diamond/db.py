@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS players (
   player_id TEXT PRIMARY KEY,
   player_name TEXT NOT NULL,
   position TEXT,
-  latest_team TEXT
+  latest_team TEXT,
+  throws TEXT,
+  bats TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(player_name);
@@ -198,8 +200,16 @@ def reset_schema(conn: sqlite3.Connection) -> None:
     init_db(conn)
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, name: str, decl: str) -> None:
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if name not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "players", "throws", "TEXT")
+    _ensure_column(conn, "players", "bats", "TEXT")
     conn.commit()
 
 

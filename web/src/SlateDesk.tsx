@@ -22,6 +22,12 @@ function signed(value: number | null | undefined, digits = 1) {
   return value > 0 ? `+${formatted}` : formatted;
 }
 
+function spLabel(name: string | null | undefined, throws?: string | null) {
+  if (!name) return "TBD";
+  const last = name.split(" ").slice(-1)[0];
+  return throws === "L" || throws === "R" ? `${last} (${throws})` : last;
+}
+
 function firstPitch(game: SlateGame) {
   const day = game.weekday || game.gameday || "";
   const time = game.gametime ? String(game.gametime).slice(0, 5) : "";
@@ -192,9 +198,9 @@ function GameCard({
         {game.stadium ? ` · ${game.stadium}` : ""}
       </p>
       <p className="spot-line">
-        {game.away_sp_name ? `${game.away_sp_name.split(" ").slice(-1)}` : "TBD"}
+        {spLabel(game.away_sp_name, game.away_sp_throws)}
         {" vs "}
-        {game.home_sp_name ? `${game.home_sp_name.split(" ").slice(-1)}` : "TBD"}
+        {spLabel(game.home_sp_name, game.home_sp_throws)}
       </p>
       <p className="spot-line">
         Rest {game.away_rest ?? "—"}d / {game.home_rest ?? "—"}d
@@ -274,7 +280,8 @@ export default function SlateDesk() {
             {game.away_team} @ {game.home_team}
           </h2>
           <p className="sub">
-            {game.away_sp_name ?? "TBD"} vs {game.home_sp_name ?? "TBD"}
+            {spLabel(game.away_sp_name, game.away_sp_throws)} vs{" "}
+            {spLabel(game.home_sp_name, game.home_sp_throws)}
             {" · "}Rest {game.away_rest ?? "—"}d / {game.home_rest ?? "—"}d
             {game.div_game ? " · Division" : ""}
             {game.is_night ? " · Night" : " · Day"}

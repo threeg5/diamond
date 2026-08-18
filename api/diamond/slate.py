@@ -24,14 +24,21 @@ WHERE home_score IS NOT NULL AND away_score IS NOT NULL
 """
 
 SLATE_GAME_COLS = """
-  game_id, season, gameday, weekday, gametime, season_type,
-  home_team, away_team, home_score, away_score,
-  roof, surface, surface_group, temp, wind, condition, day_night, stadium, location,
-  home_rest, away_rest, div_game, is_night, is_early_window,
-  is_altitude, is_overseas,
-  home_travel, away_travel, home_travel_miles, away_travel_miles,
-  home_tz_change, away_tz_change,
-  home_sp_id, home_sp_name, away_sp_id, away_sp_name, elevation
+  g.game_id, g.season, g.gameday, g.weekday, g.gametime, g.season_type,
+  g.home_team, g.away_team, g.home_score, g.away_score,
+  g.roof, g.surface, g.surface_group, g.temp, g.wind, g.condition, g.day_night, g.stadium, g.location,
+  g.home_rest, g.away_rest, g.div_game, g.is_night, g.is_early_window,
+  g.is_altitude, g.is_overseas,
+  g.home_travel, g.away_travel, g.home_travel_miles, g.away_travel_miles,
+  g.home_tz_change, g.away_tz_change,
+  g.home_sp_id, g.home_sp_name, g.away_sp_id, g.away_sp_name, g.elevation,
+  hp.throws AS home_sp_throws, ap.throws AS away_sp_throws
+"""
+
+SLATE_FROM = """
+FROM games g
+LEFT JOIN players hp ON hp.player_id = g.home_sp_id
+LEFT JOIN players ap ON ap.player_id = g.away_sp_id
 """
 
 
@@ -137,8 +144,8 @@ def slate_games(conn, gameday: str) -> list[dict]:
         conn,
         f"""
         SELECT {SLATE_GAME_COLS}
-        FROM games
-        WHERE gameday = ?
+        {SLATE_FROM}
+        WHERE g.gameday = ?
         ORDER BY gametime, away_team
         """,
         (gameday,),
@@ -349,7 +356,7 @@ def get_slate(conn, gameday: str | None = None) -> dict:
 
 
 def get_matchup(conn, game_id: str) -> dict | None:
-    game = one(conn, f"SELECT {SLATE_GAME_COLS} FROM games WHERE game_id = ?", (game_id,))
+    game = one(conn, f"SELECT {SLATE_GAME_COLS} {SLATE_FROM} WHERE g.game_id = ?", (game_id,))
     if not game:
         return None
     game = decorate_game(game)

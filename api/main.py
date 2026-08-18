@@ -85,6 +85,34 @@ def _boot_ingest() -> None:
     _ingest_if_empty()
 
 
+def _hands_needed() -> bool:
+    if not DB_PATH.exists():
+        return False
+    conn = connect()
+    try:
+        n = int(conn.execute("SELECT COUNT(*) FROM players WHERE throws IN ('L', 'R')").fetchone()[0])
+        return n < 50
+    except Exception:
+        return True
+    finally:
+        conn.close()
+
+
+def _boot_hands() -> None:
+    time.sleep(8)
+    try:
+        from diamond.hands import enrich_hands
+
+        conn = connect()
+        try:
+            n = enrich_hands(conn)
+            _log(f"Handedness enrich finished ({n} people updated)")
+        finally:
+            conn.close()
+    except Exception:
+        traceback.print_exc()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
@@ -94,6 +122,9 @@ async def lifespan(_app: FastAPI):
     _clear_stale_lock()
     if _ingest_complete():
         _log(f"No boot ingest needed (ingest_complete=1 players={_player_count()})")
+        if _hands_needed():
+            _log("Starting handedness enrich thread")
+            Thread(target=_boot_hands, daemon=True).start()
     else:
         _log(f"Starting ingest thread (db={DB_PATH.exists()} players={_player_count()})")
         Thread(target=_boot_ingest, daemon=True).start()
