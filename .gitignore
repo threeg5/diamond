@@ -8,6 +8,11 @@ data/
 node_modules/
 dist/
 .env
+.env.hostgator.ftp
+*.ftp
+*.credentials
+credentials.json
 .DS_Store
 web/dist/
 api/data/
+web/diamond-hostgator.zip

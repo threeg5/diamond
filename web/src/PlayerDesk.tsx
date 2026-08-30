@@ -3,12 +3,20 @@ import {
   fetchPlayer,
   fetchProp,
   searchPlayers,
+  type Follow,
   type Meta,
   type MissingRegular,
   type PlayerHit,
   type PlayerSummary,
   type PropQuery,
   type PropResult,
+  type TpeUser,
+  addFollow,
+  addSpot,
+  addWager,
+  lookupFollow,
+  removeFollow,
+  tpeAccountUrl,
 } from "./api";
 
 const EMPTY_QUERY: PropQuery = {
@@ -89,7 +97,13 @@ function spotTags(game: PropResult["games"][number]) {
   ));
 }
 
-export default function PlayerDesk({ meta }: { meta: Meta | null }) {
+export default function PlayerDesk({
+  meta,
+  account,
+}: {
+  meta: Meta | null;
+  account: TpeUser | null;
+}) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlayerHit[]>([]);
   const [player, setPlayer] = useState<PlayerSummary | null>(null);
@@ -97,6 +111,8 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
   const [result, setResult] = useState<PropResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [follow, setFollow] = useState<Follow | null>(null);
+  const [bookNote, setBookNote] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -121,6 +137,14 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
+
+  useEffect(() => {
+    if (!account || !player) {
+      setFollow(null);
+      return;
+    }
+    lookupFollow("athlete", "mlb", player.player_id).then(setFollow);
+  }, [account, player?.player_id]);
 
   async function selectPlayer(hit: PlayerHit) {
     setQuery(hit.player_name);
@@ -191,6 +215,89 @@ export default function PlayerDesk({ meta }: { meta: Meta | null }) {
           </ul>
         )}
       </div>
+
+      {player && (
+        <div className="book-bar">
+          {account ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  if (follow) {
+                    void removeFollow(follow.id).then(() => setFollow(null));
+                    return;
+                  }
+                  void addFollow({
+                    kind: "athlete",
+                    desk: "mlb",
+                    subjectId: player.player_id,
+                    subjectName: player.player_name,
+                  }).then(setFollow);
+                }}
+              >
+                {follow ? "Following" : "Follow"}
+              </button>
+              {result && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const label = `${player.player_name} ${stats[filters.stat] ?? filters.stat} ${filters.line}`;
+                      void addSpot({
+                        desk: "mlb",
+                        label,
+                        payload: {
+                          desk: "mlb",
+                          player_id: player.player_id,
+                          player_name: player.player_name,
+                          stat: filters.stat,
+                          line: Number(filters.line),
+                        },
+                      }).then(() => setBookNote("Spot saved to your book."));
+                    }}
+                  >
+                    Save this spot
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const stat = stats[filters.stat] ?? filters.stat;
+                      void addWager({
+                        desk: "mlb",
+                        gameLabel: `${player.player_name} · ${stat}`,
+                        market: "prop",
+                        side: `${player.player_name} over ${filters.line}`,
+                        line: Number(filters.line),
+                      }).then(() => setBookNote(`Logged over ${filters.line}.`));
+                    }}
+                  >
+                    Log over {filters.line}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const stat = stats[filters.stat] ?? filters.stat;
+                      void addWager({
+                        desk: "mlb",
+                        gameLabel: `${player.player_name} · ${stat}`,
+                        market: "prop",
+                        side: `${player.player_name} under ${filters.line}`,
+                        line: Number(filters.line),
+                      }).then(() => setBookNote(`Logged under ${filters.line}.`));
+                    }}
+                  >
+                    Log under {filters.line}
+                  </button>
+                </>
+              )}
+              <a href={tpeAccountUrl("book")}>My book</a>
+              {bookNote && <span className="note">{bookNote}</span>}
+            </>
+          ) : (
+            <a href={tpeAccountUrl("signin")}>Sign in to follow and save spots</a>
+          )}
+        </div>
+      )}
 
       {player && (
         <form className="filters" onSubmit={onSubmit}>
