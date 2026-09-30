@@ -85,6 +85,21 @@ def _boot_ingest() -> None:
     _ingest_if_empty()
 
 
+def _boot_schedule_refresh() -> None:
+    """Pick up postseason clubs and late scores without a full re-ingest."""
+    time.sleep(8)
+    if LOCK_PATH.exists():
+        _log("Skip schedule refresh; ingest lock present")
+        return
+    try:
+        from diamond.ingest import refresh_schedule
+
+        result = refresh_schedule()
+        _log(f"Schedule refresh finished {result}")
+    except Exception:
+        traceback.print_exc()
+
+
 def _hands_needed() -> bool:
     if not DB_PATH.exists():
         return False
@@ -122,6 +137,8 @@ async def lifespan(_app: FastAPI):
     _clear_stale_lock()
     if _ingest_complete():
         _log(f"No boot ingest needed (ingest_complete=1 players={_player_count()})")
+        _log("Starting schedule refresh thread")
+        Thread(target=_boot_schedule_refresh, daemon=True).start()
         if _hands_needed():
             _log("Starting handedness enrich thread")
             Thread(target=_boot_hands, daemon=True).start()

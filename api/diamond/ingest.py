@@ -4,7 +4,7 @@ import gc
 import math
 from calendar import monthrange
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -13,6 +13,7 @@ from diamond.config import (
     REGULAR_LOOKBACK_GAMES,
     REGULAR_PA,
     SEASONS,
+    ingest_years,
 )
 from diamond.db import connect, reset_schema
 from diamond.mlb import (
@@ -850,6 +851,119 @@ def prepare_missing_regulars(
     return frame.drop_duplicates(["game_id", "team", "player_id"])
 
 
+def _insert_rows(conn, table: str, frame: pd.DataFrame, columns: list[str]) -> int:
+    if frame.empty:
+        return 0
+    subset = frame.reindex(columns=columns)
+    records = [tuple(_cell(v) for v in row) for row in subset.itertuples(index=False, name=None)]
+    placeholders = ",".join("?" for _ in columns)
+    conn.executemany(
+        f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+        records,
+    )
+    return len(records)
+
+
+def _refreshed_recently(conn, hours: int = 1) -> bool:
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'schedule_refreshed_at'"
+    ).fetchone()
+    if not row or not row[0]:
+        return False
+    try:
+        stamp = datetime.fromisoformat(str(row[0]))
+    except ValueError:
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - stamp < timedelta(hours=hours)
+
+
+def refresh_schedule(years: list[int] | None = None, conn=None, force: bool = False) -> dict:
+    """Replace the latest season's schedule and team logs.
+
+    Postseason slots are published as placeholders (ALWC1, ALWC2) and only later
+    filled with the real clubs. A finished ingest used to keep that first copy.
+    """
+    configured = years or ingest_years()
+    year = max(configured)
+    if date.today().year > year:
+        year = date.today().year
+    own_conn = conn is None
+    if own_conn:
+        conn = connect()
+    try:
+        if not force and _refreshed_recently(conn):
+            print(f"Schedule refresh is current ({year})", flush=True)
+            return {"skipped": True, "season": year}
+        print(f"Refreshing {year} schedule", flush=True)
+        teams = load_teams([year])
+        raw_games = load_schedule([year])
+        venue_ids = set()
+        for game in raw_games:
+            vid = (game.get("venue") or {}).get("id")
+            if vid:
+                venue_ids.add(int(vid))
+        for team in teams.values():
+            if team.get("venue_id"):
+                venue_ids.add(int(team["venue_id"]))
+        venues = load_venues(venue_ids)
+        games = prepare_games(raw_games, teams, venues)
+        if not games.empty:
+            games = games[games["season"] == year]
+        existing_games = int(
+            conn.execute("SELECT COUNT(*) FROM games WHERE season = ?", (year,)).fetchone()[0]
+        )
+        if existing_games and len(games) < int(existing_games * 0.8):
+            raise RuntimeError(
+                f"schedule refresh got {len(games)} games, kept {existing_games}"
+            )
+
+        print(f"Refreshing {year} team logs", flush=True)
+        team_games = load_team_games([year], teams)
+        if not team_games.empty and not games.empty:
+            gmap = games.set_index("game_id")[["season_type", "gameday", "season"]]
+            for col in ("season_type", "gameday", "season"):
+                team_games[col] = team_games["game_id"].map(gmap[col]).combine_first(team_games[col])
+            team_games = team_games[team_games["game_id"].isin(set(games["game_id"]))]
+            team_games = team_games[team_games["season"] == year]
+        existing_tg = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM team_games WHERE season = ?", (year,)
+            ).fetchone()[0]
+        )
+        replace_teams = not existing_tg or len(team_games) >= int(existing_tg * 0.8)
+        if not replace_teams:
+            print(
+                f"  keep team logs; got {len(team_games)} vs {existing_tg}",
+                flush=True,
+            )
+
+        conn.execute("DELETE FROM games WHERE season = ?", (year,))
+        games_n = _insert_rows(conn, "games", games, GAME_COLS)
+        team_games_n = existing_tg
+        if replace_teams:
+            conn.execute("DELETE FROM team_games WHERE season = ?", (year,))
+            team_games_n = _insert_rows(conn, "team_games", team_games, TEAM_GAME_COLS)
+        refreshed_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("schedule_refreshed_at", refreshed_at),
+        )
+        conn.commit()
+        print(f"  {year}: {games_n} games, {team_games_n} team logs", flush=True)
+        return {
+            "skipped": False,
+            "season": year,
+            "games": games_n,
+            "team_games": team_games_n,
+            "refreshed_at": refreshed_at,
+        }
+    finally:
+        if own_conn and conn is not None:
+            conn.close()
+
+
 def write_frame(conn, table: str, frame: pd.DataFrame, columns: list[str]) -> None:
     conn.execute(f"DELETE FROM {table}")
     if frame.empty:
@@ -1037,6 +1151,11 @@ def run_ingest(years: list[int] | None = None, resume: bool = False) -> dict:
         ("seasons", ",".join(str(y) for y in years)),
     )
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("ingest_complete", "1"))
+    if not existing_games:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("schedule_refreshed_at", datetime.now(timezone.utc).isoformat()),
+        )
     conn.commit()
     conn.close()
     print("Done.", flush=True)
