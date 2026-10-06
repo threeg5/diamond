@@ -335,7 +335,8 @@ export type LastSearch = {
 
 export type TpeUser = {
   id: string;
-  email: string;
+  email: string | null;
+  username: string | null;
   display_name: string;
   tier: Tier;
   last_desk: string | null;
@@ -411,7 +412,7 @@ export function claimHandedSession() {
   history.replaceState(null, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`);
 }
 
-export async function login(input: { email: string; password: string }) {
+export async function login(input: { email?: string; username?: string; password: string }) {
   const data = await authJson<{ token: string; user: TpeUser }>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify(input),

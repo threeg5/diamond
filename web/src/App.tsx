@@ -24,7 +24,9 @@ function DeskSignIn({ onSignedIn }: { onSignedIn: (user: TpeUser) => void }) {
     setBusy(true);
     setError(null);
     try {
-      onSignedIn(await login({ email, password }));
+      onSignedIn(
+        await login(email.includes("@") ? { email, password } : { username: email, password }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign in failed.");
     } finally {
@@ -35,11 +37,11 @@ function DeskSignIn({ onSignedIn }: { onSignedIn: (user: TpeUser) => void }) {
   return (
     <form className="desk-signin" onSubmit={onSubmit}>
       <input
-        type="email"
+        type="text"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        placeholder="Email"
-        autoComplete="email"
+        placeholder="Email or username"
+        autoComplete="username"
         required
       />
       <input
